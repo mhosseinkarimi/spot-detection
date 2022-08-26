@@ -1,6 +1,29 @@
+from typing import List
 import numpy as np
 
-def sweep(srcShape, steps, endpoint=True) -> np.ndarray:
+def sweep(srcShape, steps, endpoint=True) -> List:
+    """Sweeping windows over and image to perform localized operations.
+
+    Parameters
+    ----------
+    srcShape : Tuple 
+        Shape of the array
+    steps : List of tuple or array of integers
+        steps of sweeping window in each dimension. Number of the elements should
+        be lesser or equal to array dimension
+    endpoint : bool, optional
+        Choice of including or excluding end points at each axis, by default True
+
+    Returns
+    -------
+    List
+        The list of steps at each dimension of array
+
+    Raises
+    ------
+    ValueError
+        If the number of step sizes are grater than array dimensions, ValueError is raised
+    """
     ndim = len(steps)
     try:
         assert len(srcShape) > ndim
