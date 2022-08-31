@@ -1,0 +1,7 @@
+# pycache 
+*.pyc
+
+# generated images 
+*.jpg
+*.jpeg
+*.png
