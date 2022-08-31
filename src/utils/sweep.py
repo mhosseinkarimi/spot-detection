@@ -1,7 +1,7 @@
 from typing import List
 import numpy as np
 
-def sweep(srcShape, steps, endpoint=True) -> List:
+def sweepStep(srcShape, steps, endpoint=True) -> List:
     """Sweeping windows over and image to perform localized operations.
 
     Parameters
@@ -26,7 +26,7 @@ def sweep(srcShape, steps, endpoint=True) -> List:
     """
     ndim = len(steps)
     try:
-        assert len(srcShape) > ndim
+        assert len(srcShape) >= ndim
     except:
         raise ValueError("Specified steps are more than the source dimensions")
     
@@ -39,6 +39,6 @@ def sweep(srcShape, steps, endpoint=True) -> List:
 
 if __name__ == "__main__":
     # Test case: [array([   0,  200,  400,  600,  800, 1000, 1200, 1400, 1600, 1622]), array([   0,  300,  600,  900, 1200, 1454])]
-    print(sweep((1623, 1455, 3), [200, 300]))
+    print(sweepStep((1623, 1455, 3), [200, 300]))
     # Test case: [array([   0,  200,  400,  600,  800, 1000, 1200, 1400, 1600]), array([   0,  300,  600,  900, 1200])]
-    print(sweep((1623, 1455, 3), [200, 300], endpoint=False))
+    print(sweepStep((1623, 1455, 3), [200, 300], endpoint=False))
