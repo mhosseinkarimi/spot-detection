@@ -146,6 +146,9 @@ class WatershedDetector(BaseDetector):
 
         # counting the number of contours
         numlabels, labels, stats, cents = cv.connectedComponentsWithStats(mask)
+        numlabels -= 1
+        stats = stats[1:]
+        cents = cents[1:]
         # location of the center of the contours
         cents = np.rint(cents).astype("int")
         return numlabels, labels, stats, cents
@@ -201,16 +204,18 @@ class WatershedDetector(BaseDetector):
         spot_diam_max = np.max(spot_diameter)
 
         if show_results:
+            print(f"Density of spots in square cm: {spot_density}")
             print(f"Mean area of detected spots: {spot_area_mean:2f} squared cms")
             print(f"Median area of detected spots: {spot_area_median:2f} squread cms")
             print(f"Minimum area of detected spots: {spot_area_min:2f} squared cms")
             print(f"Maximum area of detected spots: {spot_area_max:2f} squared cms")
             print(f"Mean diameter of the detected spots: {1e4 * spot_diam_mean:2f} um")
             print(f"Median diameter of detected spots: {1e4 * spot_diam_median:2f} um")
-            print(f"Minimum diameter of detected spots: {spot_diam_min:2f} um")
-            print(f"Maximum diameter of detected spots: {spot_diam_max:2f} um")
+            print(f"Minimum diameter of detected spots: {1e4 * spot_diam_min:2f} um")
+            print(f"Maximum diameter of detected spots: {1e4 * spot_diam_max:2f} um")
         
         stats = {
+            "density": spot_density,
             "min_area": spot_area_min,
             "max_area": spot_area_max,
             "mean_area": spot_area_mean,
@@ -251,6 +256,8 @@ class WatershedDetector(BaseDetector):
 
         # Perform sweeping 
         num_points = 0
+        watershed_stats = []
+        
         if self.sweep:
             threshSteps, watershedSteps = self._get_steps(imgGray.shape)
             threshImg = self.threshold(imgGray, threshSteps)
@@ -264,6 +271,7 @@ class WatershedDetector(BaseDetector):
                     # applying threshold
                     num_spot, spot_label, stats, cents = self.watershed(cutImgGray)
                     num_points += len(cents)
+                    watershed_stats.extend(stats)
                     # marking the contours on colored image
                     cutImg[spot_label != 0] = (255, 0, 0)
                     # marking the center of each contour
@@ -271,7 +279,7 @@ class WatershedDetector(BaseDetector):
                         cutImg = cv.circle(cutImg, (cnt[0], cnt[1]),
                         radius=5, color=(0, 0, 255), thickness=-1)
                     if verbose == 2:
-                        cv.imshow("Threshout",cutImg)
+                        cv.imshow("Detected spots in segment",cutImg)
                         cv.waitKey(0)
         # Applying the algorithm globally
         else:
@@ -284,35 +292,18 @@ class WatershedDetector(BaseDetector):
             # marking the center of each contour
             for cnt in cents:
                 cutImg = cv.circle(threshImg, (cnt[0], cnt[1]),
-                radius=5, color=(0, 0, 255), thickness=-1)
-            if verbose == 2:
-                cv.imshow("Threshout",threshImg)
-                cv.waitKey(0)
+                radius=3, color=(0, 0, 255), thickness=-1)
 
         # Showing the final result
         if verbose > 0:
-            cv.imshow("Maksed",maskedImg)
+            cv.imshow("Maksed Image",maskedImg)
             cv.waitKey(0)
         # Saving the marked image
         if save_path is not None:
             cv.imwrite(save_path, maskedImg)
 
         print("=================Results==============")
-        print(f"Numer of detected spots: {num_points}")
+        print(f"Number of detected spots: {num_points}")
         print(f"Marked image is saved on : {save_path}")
 
-        return stats
-
-
-
-if __name__ == "__main__":
-    img_paths = [
-        "/home/curiouscoder/Downloads/spot detection project material/test1.jpeg",
-        "/home/curiouscoder/Downloads/spot detection project material/test2.jpeg",
-        "/home/curiouscoder/Downloads/spot detection project material/test3.jpeg",
-    ]
-    for i, path in enumerate(img_paths):
-        img = cv.imread(path)
-        detector = WatershedDetector(sweep=True, threshStep=(300, 300), watershedStep=(50, 50))
-        stats = detector.detect(img, verbose=0, save_path=f"/home/curiouscoder/Desktop/size30/result{i}.jpg")
-        spot_stats = detector.stats((6.6, 2.1), img.shape[:2], stats, show_results=True)
+        return np.array(watershed_stats)
