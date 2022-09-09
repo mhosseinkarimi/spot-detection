@@ -1,3 +1,5 @@
+from curses import reset_shell_mode
+from distutils.archive_util import make_archive
 from typing import Tuple
 
 import cv2 as cv
@@ -5,6 +7,7 @@ import numpy as np
 from src.utils.filter import blur
 from src.utils.sweep import sweepStep
 from src.utils.transforms import changeColorSpace, gammaCorrection
+from scipy.stats import mode 
 
 from .base_detector import BaseDetector
 
@@ -42,23 +45,44 @@ class WatershedDetector(BaseDetector):
         self.threshStep = threshStep
         self.watershedStep = watershedStep
     
-    def _get_steps(self, imgShape) -> Tuple[np.ndarray]:
+
+    def _get_steps(self, imgShape, offset=0) -> Tuple[np.ndarray]:
         """Calculating the sweeping steps.
 
         Parameters
         ----------
         imgShape : Tuple of integers
-            _Shape of input image
+            Shape of input image
+        offset : int
+            The window start offset for sweeping method, by default 0
 
         Returns
         -------
         Tuple[np.ndarray]
             A tuple containing the steps for each dimension
         """
-        threshSteps = sweepStep(imgShape, self.threshStep, endpoint=True)
-        watershedSteps = sweepStep(imgShape, self.watershedStep, endpoint=True)
+        threshSteps = sweepStep(imgShape, self.threshStep, offset, endpoint=True)
+        watershedSteps = sweepStep(imgShape, self.watershedStep, offset, endpoint=True)
         return threshSteps, watershedSteps
     
+
+    @staticmethod
+    def preprocess(img, gamma=1.3, **kwargs):
+        # converting image to gray scale
+        imgGray = changeColorSpace(img, cspace="gray")
+        # gamma correction
+        imgGray = gammaCorrection(imgGray, gamma)
+        # gaussian blur
+        imgGray = blur(imgGray, **kwargs)
+        # increasing sharpness
+        kernel = np.array([[-1, -1, -1], 
+                           [-1, 9, -1], 
+                           [-1, -1, -1]])
+        imgGray = cv.filter2D(imgGray, -1, kernel)
+
+        return imgGray
+    
+
     def threshold(self, img, threshSteps=None) -> np.ndarray:
         """Thresholding algorithm with the option of sweeping on the image to provide
         localization.
@@ -103,6 +127,7 @@ class WatershedDetector(BaseDetector):
             ret, threshImg = cv.threshold(img, 0, 255, self.thresholdType)
             return threshImg
     
+
     def watershed(self, img) -> Tuple[np.ndarray]:
         """Watershed algorithm for spot detection using thresholded images.
 
@@ -153,6 +178,7 @@ class WatershedDetector(BaseDetector):
         cents = np.rint(cents).astype("int")
         return numlabels, labels, stats, cents
     
+
     def stats(self, img_size_cm, img_size_pxl, stats, show_results=False) -> Tuple[float]:
         """Statistics of the detected spots
 
@@ -197,7 +223,9 @@ class WatershedDetector(BaseDetector):
         spot_area_median = np.median(spot_area)
         spot_area_min = np.min(spot_area)
         spot_area_max = np.max(spot_area)
+        # spot_diameter = np.sqrt(spot_area * 2)
         spot_diameter = 2 * np.sqrt(spot_area / np.pi)
+        # spot_diameter = np.max(stats[:, 2:-1], axis=1) * (img_size_cm[0] / img_size_pxl[0])
         spot_diam_mean = np.mean(spot_diameter)
         spot_diam_median = np.median(spot_diameter)
         spot_diam_min = np.min(spot_diameter)
@@ -205,21 +233,21 @@ class WatershedDetector(BaseDetector):
 
         if show_results:
             print(f"Density of spots in square cm: {spot_density}")
-            print(f"Mean area of detected spots: {spot_area_mean:2f} squared cms")
-            print(f"Median area of detected spots: {spot_area_median:2f} squread cms")
-            print(f"Minimum area of detected spots: {spot_area_min:2f} squared cms")
-            print(f"Maximum area of detected spots: {spot_area_max:2f} squared cms")
+            # print(f"Mean area of detected spots: {spot_area_mean:2f} squared cms")
+            # print(f"Median area of detected spots: {spot_area_median:2f} squread cms")
+            # print(f"Minimum area of detected spots: {spot_area_min:2f} squared cms")
+            # print(f"Maximum area of detected spots: {spot_area_max:2f} squared cms")
             print(f"Mean diameter of the detected spots: {1e4 * spot_diam_mean:2f} um")
             print(f"Median diameter of detected spots: {1e4 * spot_diam_median:2f} um")
             print(f"Minimum diameter of detected spots: {1e4 * spot_diam_min:2f} um")
             print(f"Maximum diameter of detected spots: {1e4 * spot_diam_max:2f} um")
         
         stats = {
-            "density": spot_density,
-            "min_area": spot_area_min,
-            "max_area": spot_area_max,
-            "mean_area": spot_area_mean,
-            "median_area": spot_area_median,
+            # "density": spot_density,
+            # "min_area": spot_area_min,
+            # "max_area": spot_area_max,
+            # "mean_area": spot_area_mean,
+            # "median_area": spot_area_median,
             "min_diam": spot_diam_min,
             "max_diam": spot_diam_max,
             "mean_diam": spot_diam_mean,
@@ -228,7 +256,89 @@ class WatershedDetector(BaseDetector):
         return stats
 
 
-    def detect(self, img, verbose=0, save_path=None,**kwargs) -> None:
+    def _find_spots(self, imgGray, numVoters=1, show_results=False):
+        
+        if numVoters % 2 == 0:
+            raise ValueError("Number of voters should be an odd number")
+        
+        if show_results:
+            maskedImg = cv.cvtColor(imgGray, cv.COLOR_GRAY2BGR)
+        
+        # Applying detection sweeping window 
+        if self.sweep:
+            threshSteps, watershedSteps = self._get_steps(imgGray.shape, offset=0)
+            offsets = np.linspace(-50, 50, numVoters)
+            threshImg = self.threshold(imgGray, threshSteps)
+            maskedImg = cv.cvtColor(imgGray, cv.COLOR_GRAY2BGR)
+            centers = []
+            statistics = []
+
+            for offset in offsets:
+                threshSteps, watershedSteps = self._get_steps(imgGray.shape, offset)
+                ySteps, xSteps = watershedSteps
+                
+                for i in range(len(ySteps)-1):
+                    for j in range(len(xSteps)-1):
+                        # cutting a window of images
+                        cutThresh = threshImg[ySteps[i]:ySteps[i+1], xSteps[j]:xSteps[j+1]]
+                        cutImg = maskedImg[ySteps[i]:ySteps[i+1], xSteps[j]:xSteps[j+1]]
+                        # applying threshold
+                        num_spot, spot_label, stats, cents = self.watershed(cutThresh) 
+
+                        if show_results:
+                            cutImg[spot_label != 0] = (255, 0, 0)
+                            for cnt in cents:
+                                cutImg = cv.circle(
+                                    cutImg, (cnt[0], cnt[1]),
+                                    radius=5, color=(0, 0, 255), thickness=-1
+                                    )
+
+                        cents = [(x + xSteps[j], y + ySteps[i]) for x, y in cents]
+                        stats = [[stats[i][0] + xSteps[j], stats[i][1] + ySteps[i], *stats[i][2:]] for i in range(len(stats))]
+                        centers.extend(cents)
+                        statistics.extend(stats)
+
+            cv.imshow(f"Detection result with offset = {offset}", maskedImg)
+            cv.waitKey(0)    
+
+        # Applying the algorithm globally
+        else:
+            threshImg = self.threshold(imgGray)
+            num_spot, spot_label, stats, cents = self.watershed(threshImg)
+            centers = cents
+            statistics = stats
+        
+        return centers, statistics
+    
+
+    def sift(self, cents, stats, voteLimit, distanceLimit=3, areaLimit=10):
+        selected_cents = []
+        selected_stats = []
+        centers = []
+        res_stats = []
+
+        while cents:
+            matched_idx = [0]
+            for i in range(1, len(cents)):
+                d = np.sqrt((cents[0][0] - cents[i][0]) ** 2 + (cents[0][1] - cents[i][1]) ** 2)
+                if d <= distanceLimit and np.abs(stats[0][-1] - stats[i][-1]) <= areaLimit:
+                    matched_idx.append(i)
+            if len(matched_idx) >= voteLimit:
+                selected_cents.extend([cents[i] for i in matched_idx])
+                selected_stats.extend([stats[i] for i in matched_idx])
+                centX = mode([cents[i][0] for i in matched_idx])[0].item()
+                centY = mode([cents[i][1] for i in matched_idx])[0].item()
+                stat = np.mean([stats[i] for i in matched_idx], axis=0)
+                centers.append((centX, centY))
+                res_stats.append(stat)
+
+            for idx in sorted(matched_idx, reverse=True):
+                cents.pop(idx)
+        
+        return selected_cents, selected_stats, centers, res_stats
+
+                    
+    def detect(self, img, numVoters=1, verbose=0, save_path=None, **kwargs) -> None:
         """API for using this detector.
 
         Parameters
@@ -242,61 +352,29 @@ class WatershedDetector(BaseDetector):
         save_path: Path like object or string
             the path to saving destination
         """
-
+        # create a copy of the original image for later masking
         maskedImg = img.copy()
-
-        # converting image to gray scale
-        imgGray = changeColorSpace(img, cspace="gray")
-        imgGray = gammaCorrection(imgGray, gamma=1.3)
-        imgGray = blur(imgGray, **kwargs)
-        kernel = np.array([[-1, -1, -1], 
-                           [-1, 9, -1], 
-                           [-1, -1, -1]])
-        imgGray = cv.filter2D(imgGray, -1, kernel)
+        # preprocessing
+        imgGray = self.preprocess(img, **kwargs)
+        maskedImg = cv.cvtColor(imgGray, cv.COLOR_GRAY2BGR)
 
         # Perform sweeping 
-        num_points = 0
-        watershed_stats = []
-        
-        if self.sweep:
-            threshSteps, watershedSteps = self._get_steps(imgGray.shape)
-            threshImg = self.threshold(imgGray, threshSteps)
-            xSteps, ySteps = watershedSteps
-            
-            for i in range(len(xSteps)-1):
-                for j in range(len(ySteps)-1):
-                    # cutting a window of images
-                    cutImgGray = threshImg[xSteps[i]:xSteps[i+1], ySteps[j]:ySteps[j+1]]
-                    cutImg = maskedImg[xSteps[i]:xSteps[i+1], ySteps[j]:ySteps[j+1]]
-                    # applying threshold
-                    num_spot, spot_label, stats, cents = self.watershed(cutImgGray)
-                    num_points += len(cents)
-                    watershed_stats.extend(stats)
-                    # marking the contours on colored image
-                    cutImg[spot_label != 0] = (255, 0, 0)
-                    # marking the center of each contour
-                    for cnt in cents:
-                        cutImg = cv.circle(cutImg, (cnt[0], cnt[1]),
-                        radius=5, color=(0, 0, 255), thickness=-1)
-                    if verbose == 2:
-                        cv.imshow("Detected spots in segment",cutImg)
-                        cv.waitKey(0)
-        # Applying the algorithm globally
-        else:
-            threshImg = self.threshold(imgGray)
-            
-            num_spot, spot_label, stats, cents = self.watershed(threshImg)
-            num_points += len(cents)
-            # marking the contours on colored image
-            threshImg[spot_label != 0] = (255, 0, 0)
-            # marking the center of each contour
-            for cnt in cents:
-                cutImg = cv.circle(threshImg, (cnt[0], cnt[1]),
-                radius=3, color=(0, 0, 255), thickness=-1)
+        show_voter_results = True if verbose == 2 else False
+        cents, stats = self._find_spots(imgGray, numVoters, show_results=show_voter_results)
+        # cents_list, stats_list, cents, stats = self.sift(cents, stats, voteLimit=4, distanceLimit=5, areaLimit=5)
 
-        # Showing the final result
+        num_points = len(cents)
+
+        for cent in cents:
+            maskedImg = cv.circle(
+                maskedImg, (cent[0], cent[1]),
+                radius=5, color=(255, 255, 255), thickness=-1
+                )
+
         if verbose > 0:
             cv.imshow("Maksed Image",maskedImg)
+            cv.waitKey(0)
+            cv.imshow("Image", img)
             cv.waitKey(0)
         # Saving the marked image
         if save_path is not None:
@@ -306,4 +384,62 @@ class WatershedDetector(BaseDetector):
         print(f"Number of detected spots: {num_points}")
         print(f"Marked image is saved on : {save_path}")
 
-        return np.array(watershed_stats)
+        return np.array(stats)
+    
+    def postprcessDetection(self, img, stats, save_path=None, **kwargs):
+        self.sweep = False
+        maskedImg = img.copy()
+        postprocess_cents = []
+        postprocess_stats = []
+        # preprocessing
+        imgGray = self.preprocess(img, **kwargs)
+        maskedImg = cv.cvtColor(imgGray, cv.COLOR_GRAY2BGR)
+        for stat in stats:
+            xtop, ytop, width, height, area = stat.astype("int")
+            cutImg = imgGray[ytop-5:ytop+height+5, xtop-5:xtop+width+5]
+            point_cents, point_stats = self._find_spots(cutImg, numVoters=1)
+            for i in range(len(point_cents)):
+                point_cents[i] = (point_cents[i][0] + xtop-5, point_cents[i][1] + ytop-5)
+            postprocess_cents.extend(point_cents)
+            postprocess_stats.extend(point_stats)
+        print(postprocess_cents)
+        for cnt in postprocess_cents:
+                maskedImg = cv.circle(maskedImg, (cnt[0], cnt[1]),
+                radius=3, color=(0, 0, 255), thickness=-1)
+        cv.imshow("Maksed Image",maskedImg)
+        cv.waitKey(0)
+        cv.imshow("Image", img)
+        cv.waitKey(0)
+
+        num_points = len(postprocess_cents)
+        # Saving the marked image
+        if save_path is not None:
+            cv.imwrite(save_path, maskedImg)
+
+        print("=================Results==============")
+        print(f"Number of detected spots: {num_points}")
+        print(f"Marked image is saved on : {save_path}")
+
+        return np.array(stats)
+
+
+
+
+
+
+
+if __name__ == "__main__":
+    # img_paths = [
+    #     # "/home/curiouscoder/Downloads/spot detection project material/test1.jpeg",
+    #     # "/home/curiouscoder/Downloads/spot detection project material/test2.jpeg",
+    #     # "/home/curiouscoder/Downloads/spot detection project material/test3.jpeg",
+    # ]
+    img_paths = ["/home/curiouscoder/Desktop/spraying project/test 1/fig1.jpg"]
+    for i, path in enumerate(img_paths):
+        img = cv.imread(path)
+        print(img.shape)
+        detector = WatershedDetector(sweep=True, threshStep=(400, 400), watershedStep=(50, 50))
+        stats = detector.detect(img, numVoters=1, verbose=2, save_path=f"/home/curiouscoder/Desktop/15voter/result{1}.jpg")
+        # stats = detector.postprcessDetection(img, stats, save_path=f"/home/curiouscoder/Desktop/15voter/result_post{1}.jpg")
+        spot_stats = detector.stats((6.6, 2.1), img.shape[:2], stats, show_results=True)
+# 
