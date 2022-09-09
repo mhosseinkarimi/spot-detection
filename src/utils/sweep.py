@@ -35,10 +35,10 @@ def sweepStep(srcShape, steps, offset=0, endpoint=True) -> List:
     
     sweepSteps = []
     for i in range(ndim):
-        tempSteps = np.arange(offset, srcShape[i], steps[i])
+        tempSteps = np.arange(offset, srcShape[i], steps[i], dtype=int)
         if offset < 0:
             tempSteps = tempSteps[tempSteps > 0] 
-            tempSteps = np.insert(tempSteps, 0, 0)
+            tempSteps = np.insert(tempSteps, 0, 0).astype(int)
         sweepSteps.append(tempSteps)
         if endpoint and (srcShape[i] - 1) != sweepSteps[i][-1]:
             sweepSteps[i] = np.append(sweepSteps[i], srcShape[i]-1)
