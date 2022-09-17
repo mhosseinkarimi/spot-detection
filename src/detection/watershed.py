@@ -1,3 +1,4 @@
+from os import stat
 from typing import Tuple
 
 import cv2 as cv
@@ -248,7 +249,7 @@ class WatershedDetector(BaseDetector):
         # converting image to gray scale
         imgGray = changeColorSpace(img, cspace="gray")
         imgGray = gammaCorrection(imgGray, gamma=1.3)
-        imgGray = blur(imgGray, **kwargs)
+        # imgGray = blur(imgGray, **kwargs)
         kernel = np.array([[-1, -1, -1], 
                            [-1, 9, -1], 
                            [-1, -1, -1]])
@@ -257,30 +258,39 @@ class WatershedDetector(BaseDetector):
         # Perform sweeping 
         num_points = 0
         watershed_stats = []
+        watershed_cents = []
         
         if self.sweep:
             threshSteps, watershedSteps = self._get_steps(imgGray.shape)
             threshImg = self.threshold(imgGray, threshSteps)
-            xSteps, ySteps = watershedSteps
+            ySteps, xSteps = watershedSteps
             
-            for i in range(len(xSteps)-1):
-                for j in range(len(ySteps)-1):
+            for i in range(len(ySteps)-1):
+                for j in range(len(xSteps)-1):
                     # cutting a window of images
-                    cutImgGray = threshImg[xSteps[i]:xSteps[i+1], ySteps[j]:ySteps[j+1]]
-                    cutImg = maskedImg[xSteps[i]:xSteps[i+1], ySteps[j]:ySteps[j+1]]
+                    cutImgGray = threshImg[ySteps[i]:ySteps[i+1], xSteps[j]:xSteps[j+1]]
+                    cutImg = maskedImg[ySteps[i]:ySteps[i+1], xSteps[j]:xSteps[j+1]]
                     # applying threshold
                     num_spot, spot_label, stats, cents = self.watershed(cutImgGray)
+                    cents = [(y + ySteps[i], x + xSteps[j]) for x, y in cents]
+                    stats = [[stats[k][0] + xSteps[j], stats[k][1] + ySteps[i], *stats[k][2:]] for k in range(len(stats))]
                     num_points += len(cents)
                     watershed_stats.extend(stats)
-                    # marking the contours on colored image
-                    cutImg[spot_label != 0] = (255, 0, 0)
-                    # marking the center of each contour
-                    for cnt in cents:
-                        cutImg = cv.circle(cutImg, (cnt[0], cnt[1]),
-                        radius=5, color=(0, 0, 255), thickness=-1)
-                    if verbose == 2:
-                        cv.imshow("Detected spots in segment",cutImg)
-                        cv.waitKey(0)
+                    watershed_cents.extend(cents)
+
+
+            updated_cents, updated_stats = self.postprocess(
+                imgGray, watershed_cents, watershed_stats, distanceThreshold=40
+            )
+            # marking the contours on colored image
+            # cutImg[spot_label != 0] = (255, 0, 0)
+            # marking the center of each contour
+            for cnt in updated_cents:
+                maskedImg = cv.circle(maskedImg, (cnt[1], cnt[0]),
+                radius=5, color=(0, 0, 255), thickness=-1)
+            if verbose == 2:
+                cv.imshow("Detected spots in segment",maskedImg)
+                cv.waitKey(0)
         # Applying the algorithm globally
         else:
             threshImg = self.threshold(imgGray)
@@ -288,10 +298,10 @@ class WatershedDetector(BaseDetector):
             num_spot, spot_label, stats, cents = self.watershed(threshImg)
             num_points += len(cents)
             # marking the contours on colored image
-            threshImg[spot_label != 0] = (255, 0, 0)
+            # threshImg[spot_label != 0] = (255, 0, 0)
             # marking the center of each contour
             for cnt in cents:
-                cutImg = cv.circle(threshImg, (cnt[0], cnt[1]),
+                maskedImg = cv.circle(maskedImg, (cnt[0], cnt[1]),
                 radius=3, color=(0, 0, 255), thickness=-1)
 
         # Showing the final result
@@ -301,9 +311,70 @@ class WatershedDetector(BaseDetector):
         # Saving the marked image
         if save_path is not None:
             cv.imwrite(save_path, maskedImg)
+            print("=================Results==============")
+            print(f"Number of detected spots: {num_points}")
+            print(f"Marked image is saved on : {save_path}")
 
-        print("=================Results==============")
-        print(f"Number of detected spots: {num_points}")
-        print(f"Marked image is saved on : {save_path}")
+        count = 0
+        if len(updated_cents) == len(watershed_cents):
+            for i in range(len(updated_cents)):
+                if updated_cents[i] == watershed_cents[i]:
+                    count += 1
+                else:
+                    print(updated_cents[i], watershed_cents[i])
+        else:
+            print(len(updated_cents), len(watershed_cents))
+        print(count)
+        return updated_cents, np.array(updated_stats)
 
-        return np.array(watershed_stats)
+    @staticmethod
+    def _distance(pt1, pt2):
+        return np.sqrt((pt1[0] - pt2[0]) ** 2 + (pt1[1] - pt2[1]) ** 2)
+
+
+    def postprocess(self, img, cents, stats, distanceThreshold):
+        updated_cents = []
+        updated_stats = []
+
+        while cents: 
+            cluster_cents = [cents[0]] 
+            cluster_stats = [stats[0]]
+            cents.pop(0)     
+            stats.pop(0)
+
+            for cnt in cluster_cents:
+                for i, checked_cnt in enumerate(cents):
+                    if self._distance(checked_cnt, cnt) < distanceThreshold:
+                        cluster_cents.append(checked_cnt)
+                        cluster_stats.append(stats[i])
+                        cents.pop(i)
+                        stats.pop(i)
+
+            contour_cnt = (
+                np.mean([cnt[0] for cnt in cluster_cents], dtype=int),
+                np.mean([cnt[1] for cnt in cluster_cents], dtype=int)
+            )
+            if len(cluster_cents) > 1:
+                margin = (
+                    int(np.min([25, contour_cnt[0], img.shape[0]-contour_cnt[0]])), 
+                    int(np.min([25, contour_cnt[1], img.shape[1]-contour_cnt[1]])))
+                cutImg = img[contour_cnt[0]-margin[0]:contour_cnt[0]+margin[0], contour_cnt[1]-margin[1]:contour_cnt[1]+margin[1]]
+                thresh = self.threshold(cutImg)
+                cv.imshow("img", thresh)
+                cv.waitKey(0)
+                numlabels, labels, new_stats, new_cents = self.watershed(thresh)
+
+                new_cents = [(y + contour_cnt[0]-margin[0], x + contour_cnt[1]-margin[1]) for y, x in new_cents]
+                new_stats = [[new_stats[k][0] + contour_cnt[1]-margin[1], new_stats[k][1] + contour_cnt[0]-margin[0], *new_stats[k][2:]] for k in range(len(new_stats))]
+                updated_cents.extend(new_cents)
+                updated_stats.extend(new_stats)
+
+                print(f"old cents: {cluster_cents}")
+
+                print(f"new cents: {new_cents}")
+
+
+            else:
+                updated_cents.extend(cluster_cents)
+                updated_stats.extend(cluster_stats)
+        return updated_cents, updated_stats
