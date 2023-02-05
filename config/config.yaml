@@ -1,0 +1,7 @@
+test_root: /mnt/c/Users/mhuss/OneDrive/Desktop/spot_measurement_material/test_images
+output_dir: /mnt/c/Users/mhuss/OneDrive/Desktop/
+detector: watershed
+thresh_type: local
+thresh_steps: [400, 400]
+img_height: 6.6
+img_width: 2.6

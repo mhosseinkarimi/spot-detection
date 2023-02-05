@@ -1,7 +1,8 @@
-import numpy as np
 import cv2 as cv
+import numpy as np
 
-def blur(img, method="gaussian", kernel_size=5, sigma=1, sigmaColor=1) -> np.ndarray:
+
+def blur(img, method="gaussian", kernel_size=5, sigma=0.5, sigmaColor=1) -> np.ndarray:
     """Blurs the image and reduces the effect of noise and outliers.
 
     Parameters
@@ -43,5 +44,3 @@ def blur(img, method="gaussian", kernel_size=5, sigma=1, sigmaColor=1) -> np.nda
         return cv.bilateralBlur(img, kernel_size, sigmaColor, sigma)
     else:
         raise ValueError(f"{method} is not a valid option for blurring method")
-
-    
